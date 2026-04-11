@@ -1,0 +1,84 @@
+name: "publish"
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest" # for Arm based macs (M1 and above)
+            args: "--target aarch64-apple-darwin"
+            os: "MacOS"
+          - platform: "macos-latest" # for Intel based macs
+            args: "--target x86_64-apple-darwin"
+            os: "MacOS"
+          - platform: "ubuntu-22.04" # for Linux
+            args: ""
+            os: "Linux"
+          - platform: "windows-latest" # for Windows x64
+            args: ""
+            os: "Windows"
+          - platform: "windows-latest" # for Windows ARM64
+            args: "--target aarch64-pc-windows-msvc"
+            os: "Windows"
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || contains(matrix.args, 'aarch64-pc-windows-msvc') && 'aarch64-pc-windows-msvc' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__ # the action automatically replaces \_\_VERSION\_\_ with the app version
+          releaseName: "Gemini Desktop v__VERSION__"
+          releaseBody: "See the assets below to download the latest version for your OS."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+          
+      - name: Rename and Package
+        shell: bash
+        run: |
+          find src-tauri/target -type f \( -name "Gemini*.deb" -o -name "Gemini*.AppImage" -o -name "Gemini*.msi" -o -name "Gemini*.exe" -o -name "Gemini*.dmg" \) 2>/dev/null | while read f; do
+            dir=$(dirname "$f")
+            base=$(basename "$f")
+            if [[ "$base" != "Gemini_${{ matrix.os }}"* ]]; then
+              mv "$f" "$dir/Gemini_${{ matrix.os }}_$base"
+            fi
+          done || true
+          
+          if [ "${{ matrix.os }}" == "Linux" ]; then
+            version=$(node -p "require('./package.json').version")
+            tar -czf "Gemini_Linux_v${version}.tar.gz" -C src-tauri/target/release gemini
+            gh release upload "v${version}" Gemini_Linux_v${version}.tar.gz
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
